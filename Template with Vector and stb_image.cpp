@@ -1,4 +1,5 @@
 #include <cmath>
+#include <iostream>
 
 #define _CRT_SECURE_NO_WARNINGS 1
 #include <vector>
@@ -33,6 +34,11 @@ public:
 		return sqr(coord[0]) + sqr(coord[1]) + sqr(coord[2]);
 	}
 
+	Vector normalize() const {
+		double norm = sqrt(this->norm2());
+		return Vector(coord[0]/norm,coord[1]/norm,coord[2]/norm);
+	}
+
 	double coord[3];
 };
 
@@ -62,7 +68,7 @@ public:
 	explicit ray(const Vector& center, const Vector& direction){
 		O = center;
 		// Error if norm(u) = 0
-		u = direction / sqrt(direction.norm2());
+		u = direction.normalize();
 	}
 	Vector O;
 	Vector u;
@@ -81,45 +87,114 @@ public:
 		R = r;
 	}
 
-	bool intersect(const ray& r){
+	sphere(const Vector& v,double r, const Vector& a){
+		C = v;
+		R = r;
+		albedo = a;
+	}
+
+	bool intersect(const ray& r, Vector &P, Vector &N, double &t){
+		// renvoyer la normale : CP normalisé
+		// renvoyer P et N: on pourrait créer une classe intersection.
 		double b = 2*dot(r.u , r.O - C) ;
 		double c = (r.O - C).norm2() - R*R;
 		double delta = pow(b,2) - 4 * c;
-		double t = 0;
+		double t1 = 0;
 		double t2 = 0;
 
 		if (delta < 0){
 			return false;
 		}
-		else if (delta == 0){
-			//t = -b/2;
-			//return t>= 0;
-			return b < 0;
-		}
 		else {
-			//t, t2 = (-b-sqr(delta))/(2*a),(-b+sqr(delta))/(2*a);
-			t , t2 = -b-sqrt(delta), -b+sqrt(delta);
-			return t >= 0 || t2 >= 0 ;
+			t1 = (-b-sqrt(delta))/2;
+			t2 =  (-b+sqrt(delta))/2;
+			//std::cout<<"t1:"<<t1<<" t2: "<<t2<<" ";
+			if (t1 < 0 && t2 < 0) {return false;}
+
+			// if at least one solution, compute N and P
+			if (t1 > 0 && t2 > 0) {t = std::min(t1,t2);}
+			else {t = std::max(t1,t2);}
+			P = r.O + t * r.u;
+			N = (P - C).normalize();
+			return true;
 		}
 
 	};
 
 	Vector C;
 	double R;
+	Vector albedo;
 };
 
 
+class scene{
+public:
+	scene(std::vector<sphere> sl){
+		for (int i =0;i<sl.size();i++){
+			sphere_list.push_back(sl[i]);
+		}
+	}
+	
+	//intersection with the closest sphere
+	bool intersect(const ray& r,  Vector &Pscene, Vector &Nscene,double &tscene, int &index){
+		double min_t = -1.0;
+		int min_index = -1;
+		for (int i=0; i<sphere_list.size(); i++){
+			Vector P;
+			Vector N;
+			double t;
+			if (sphere_list[i].intersect(r,P,N,t)){
+				//std::cout<<" match! ";
+				//t should be = 0 since its false
+				if ( (t < min_t && min_t != -1.0 ) || min_t == -1 ){
+					//new contestant, we update all
+					min_t = t;
+					min_index = i;
+				}
+			}
+			//std::cout<<i<<" "<<t<<" "<<min_t<<" "<<min_index<<"\n";
+		}
+		//if not found, false
+		if (min_index == -1) {return false;}
+
+		//else update return values
+		tscene =  min_t;
+		index = min_index;
+		Pscene = r.O + tscene * r.u;
+		Nscene =  (Pscene - sphere_list[index].C).normalize();
+		return true;
+		
+		// s'assurer que P, N,t et index correspondent bien au minimum de distance trouvé
+	}
+
+	std::vector<sphere> sphere_list;
+};
 
 
 int main() {
 	int W = 512;
 	int H = 512;
+	std::vector<unsigned char> image(W*H * 3, 0);
 
 	Vector center(0, 0, 55);
 
-	sphere boule(Vector(0,0,0),10);
+	sphere boule(Vector(0,0,0),10,Vector(0.3,0.4,0.9));
+	sphere boule1(Vector(0,0,-1000),940,Vector(0.1,0.8,0.2));
+	sphere boule2(Vector(0,1000,0),940,Vector(0.85,0.2,0.2));
+	sphere boule3(Vector(0,0,1000),940,Vector(0.1,0.8,0.2));
+	sphere boule4(Vector(0,-1000,0),990,Vector(0.1,0.1,0.95));
 
-	std::vector<unsigned char> image(W*H * 3, 0);
+
+	std::vector<sphere> sphere_list = {boule,boule1,boule2,boule3,boule4};
+	scene scene_1(sphere_list);
+	//update l'algo pour que la scène marche (boucle for)
+
+
+	Vector light(-10,20,40);
+	//Vector albedo(0.3,0.4,0.9);
+	double I = 2E10;
+	double gamma = 0.454;
+
 
 
 	ray r = ray(Vector(0,0,0),Vector(1,0,0));
@@ -127,30 +202,38 @@ int main() {
 	double y;
 	double z;
 	double alpha = 2 * M_PI / 360 * 60;
+
 #pragma omp parallel for
 	for (int i = 0; i < H; i++) {
 		for (int j = 0; j < W; j++) {
+			Vector P;
+			Vector N;
+			double t;
+			int sphere_index;
+			Vector albedo;
+
 			x = j - W/2 + 0.5;
 			y = -i + W/2 - 0.5;
 			z = -W/(2*tan(alpha/2));
 			
 			r = ray(center, Vector(x,y,z));
 
-			if (boule.intersect(r)){
-				image[(i*W + j) * 3 + 0] = 255;   // RED
-				image[(i*W + j) * 3 + 1] = 255;  // GREEN
-				image[(i*W + j) * 3 + 2] = 255 ;  // BLUE
+			if (scene_1.intersect(r,P,N,t,sphere_index)){
+				Vector albedo = scene_1.sphere_list[sphere_index].albedo;
+				
+				Vector vect_lum = I * albedo / M_PI * std::max(dot((light-P).normalize(),N),0.) / ( 4*M_PI* ((P-light).norm2()) );
+
+				//ramener dans 0 255? prendre le min 255,truc
+				image[(i*W + j) * 3 + 0] = std::min(pow(vect_lum[0],gamma),255.0) ; // RED
+				image[(i*W + j) * 3 + 1] = std::min(pow(vect_lum[1],gamma),255.0) ; // GREEN
+				image[(i*W + j) * 3 + 2] = std::min(pow(vect_lum[2],gamma),255.0) ; // BLUE
 			}
 			else {
-				image[(i*W + j) * 3 + 0] = 0;   // RED
+				image[(i*W + j) * 3 + 0] = 0;  // RED
 				image[(i*W + j) * 3 + 1] = 0;  // GREEN
 				image[(i*W + j) * 3 + 2] = 0 ; // BLUE
 			}
-			
-			//Vector v(j / (double)W - 0.5, i / (double)H - 0.5, 0.);
-			//double gaussianVal = exp(-(v-center).norm2()/(2*sqr(0.2)));
-
-			
+						
 		}
 	}
 	stbi_write_png("image.png", W, H, 3, &image[0], 0);
