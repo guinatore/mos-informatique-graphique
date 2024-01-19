@@ -133,10 +133,12 @@ public:
 
 class scene{
 public:
-	scene(std::vector<sphere> sl){
+	scene(std::vector<sphere> sl,Vector l,double i){
 		for (int i =0;i<sl.size();i++){
 			sphere_list.push_back(sl[i]);
 		}
+		L = l;
+		I = i;
 	}
 	
 	//intersection with the closest sphere
@@ -171,12 +173,67 @@ public:
 		// s'assurer que P, N,t et index correspondent bien au minimum de distance trouvé
 	}
 
+	Vector get_color(const ray& r, int ray_depth){
+		//Calcul de l'intersection
+		Vector P;
+		Vector N;
+		double t;
+		int sphere_index;
+		Vector albedo;
+
+
+		// Si trop de récursion : Noir
+		if (ray_depth < 0){
+			return Vector(0.,0.,0.);
+		}
+
+		// Si intersection : disjonction selon la nature de la surface
+		if (this->intersect(r,P,N,t,sphere_index)){
+			
+			// Si intersection miroir : Récursion
+			if (sphere_list[sphere_index].is_mirror){
+				//rayon réfléchi
+				ray reflected(P + 0.0001 * N, r.u - 2 * dot(r.u,N) * N); //Centre décalé, et on inverse la normale
+				return this->get_color(reflected,ray_depth -1);
+			}
+
+			// Si intersection diffuse : Calcul classique
+
+			// On regarde d'abord si le point d'intersection voit la lumière
+			// Création d'un rayon de P vers L
+			ray r2 = ray(P + 0.0001 * N,L-P);
+			Vector P2;
+			Vector N2;
+			double t2;
+			int sphere_index2;
+			if (this->intersect(r2,P2,N2,t2,sphere_index2) and sqr(t2) < (L- P).norm2()){
+				return Vector(0.,0.,0.);
+			}
+			else {
+				// contient aussi le cas où pas d'inersection entre le 2ème rayon et la scène
+				// intersection, il faut vérifier si l'intersection est avant la lumière
+				Vector albedo = sphere_list[sphere_index].albedo;
+				Vector vect_lum = I * albedo / M_PI * std::max(dot((L-P).normalize(),N),0.) / ( 4*M_PI* ((P-L).norm2()) );
+
+				return vect_lum;
+			}
+
+
+		}
+		// Si pas d'intersection, rien (mais ne devrait pas arriver, c'est une scène fermée)
+		else {
+			//std::cout<<"Warning: No intersection for ray";
+			return Vector(0.,0.,0.);
+		}
+			
+	}
+
+
 	std::vector<sphere> sphere_list;
+	Vector L;
+	double I;
 };
 
-Vector get_color(const ray& r, int iteration){
-
-}
 
 
 int main() {
@@ -191,16 +248,23 @@ int main() {
 	sphere boule2(Vector(0,1000,0),940,Vector(0.85,0.2,0.2),false);
 	sphere boule3(Vector(0,0,1000),940,Vector(0.1,0.8,0.2),false);
 	sphere boule4(Vector(0,-1000,0),990,Vector(0.1,0.1,0.95),false);
+	sphere boule5(Vector(1000,0,0),940,Vector(0.9,0.9,0.1),false);
+	sphere boule6(Vector(-1000,0,0),940,Vector(0.1,0.9,0.9),false);
 
 
-	std::vector<sphere> sphere_list = {boule,boule1,boule2,boule3,boule4};
-	scene scene_1(sphere_list);
-	//update l'algo pour que la scène marche (boucle for)
-
+	std::vector<sphere> sphere_list;
+	sphere_list.push_back(boule);
+	sphere_list.push_back(boule1);
+	sphere_list.push_back(boule2);
+	sphere_list.push_back(boule3);
+	sphere_list.push_back(boule4);
+	sphere_list.push_back(boule5);
+	sphere_list.push_back(boule6);
 
 	Vector light(-10,20,40);
-	//Vector albedo(0.3,0.4,0.9);
-	double I = 2E10;
+	double I = 1E9;
+
+	scene scene_1(sphere_list,light,I);
 	double gamma = 0.454;
 
 
@@ -215,49 +279,18 @@ int main() {
 	// pour chaque pixel, on crée un rayon 
 	for (int i = 0; i < H; i++) {
 		for (int j = 0; j < W; j++) {
-			Vector P;
-			Vector N;
-			double t;
-			int sphere_index;
-			Vector albedo;
+			
 
 			x = j - W/2 + 0.5;
 			y = -i + W/2 - 0.5;
 			z = -W/(2*tan(alpha/2));
 			
 			r = ray(center, Vector(x,y,z));
-			// si le rayon intersecte la scène
-			if (scene_1.intersect(r,P,N,t,sphere_index)){
-				// On regarde d'abord si le point d'intersection voit la lumière
-				// Création d'un rayon de P vers L
-				ray r2 = ray(P + 0.0001 * N,light-P);
-				Vector P2;
-				Vector N2;
-				double t2;
-				int sphere_index2;
-				if (scene_1.intersect(r2,P2,N2,t2,sphere_index2) and sqr(t2) < (light- P).norm2()){
-					image[(i*W + j) * 3 + 0] = 0;
-					image[(i*W + j) * 3 + 1] = 0;
-					image[(i*W + j) * 3 + 2] = 0;
-				}
-				else {
-					// contient aussi le cas où pas d'inersection entre le 2ème rayon et la scène
-					// intersection, il faut vérifier si l'intersection est avant la lumière
-					Vector albedo = scene_1.sphere_list[sphere_index].albedo;
-					Vector vect_lum = I * albedo / M_PI * std::max(dot((light-P).normalize(),N),0.) / ( 4*M_PI* ((P-light).norm2()) );
+			Vector color(scene_1.get_color(r,5));
 
-					image[(i*W + j) * 3 + 0] = std::min(pow(vect_lum[0],gamma),255.0) ; // RED
-					image[(i*W + j) * 3 + 1] = std::min(pow(vect_lum[1],gamma),255.0) ; // GREEN
-					image[(i*W + j) * 3 + 2] = std::min(pow(vect_lum[2],gamma),255.0) ; // BLUE
-				}
-
-
-			}
-			else {
-				image[(i*W + j) * 3 + 0] = 0;  // RED
-				image[(i*W + j) * 3 + 1] = 0;  // GREEN
-				image[(i*W + j) * 3 + 2] = 0 ; // BLUE
-			}
+			image[(i*W + j) * 3 + 0] = std::min(pow(color[0],gamma),255.0);  // RED
+			image[(i*W + j) * 3 + 1] = std::min(pow(color[1],gamma),255.0);  // GREEN
+			image[(i*W + j) * 3 + 2] = std::min(pow(color[2],gamma),255.0);  // BLUE
 						
 		}
 	}
