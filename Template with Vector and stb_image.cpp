@@ -77,20 +77,23 @@ public:
 
 class sphere{
 public:
-	explicit sphere(double x,double y, double z, double r){
+	explicit sphere(double x,double y, double z, double r,bool m){
 		C = Vector(x,y,z);
 		R = r;
+		is_mirror = m;
 	}
 
-	sphere(const Vector& v, double r){
+	sphere(const Vector& v, double r,bool m){
 		C = v;
 		R = r;
+		is_mirror = m;
 	}
 
-	sphere(const Vector& v,double r, const Vector& a){
+	sphere(const Vector& v,double r, const Vector& a,bool m = false){
 		C = v;
 		R = r;
 		albedo = a;
+		is_mirror = m;
 	}
 
 	bool intersect(const ray& r, Vector &P, Vector &N, double &t){
@@ -124,6 +127,7 @@ public:
 	Vector C;
 	double R;
 	Vector albedo;
+	bool is_mirror;
 };
 
 
@@ -170,6 +174,10 @@ public:
 	std::vector<sphere> sphere_list;
 };
 
+Vector get_color(const ray& r, int iteration){
+
+}
+
 
 int main() {
 	int W = 512;
@@ -178,11 +186,11 @@ int main() {
 
 	Vector center(0, 0, 55);
 
-	sphere boule(Vector(0,0,0),10,Vector(0.3,0.4,0.9));
-	sphere boule1(Vector(0,0,-1000),940,Vector(0.1,0.8,0.2));
-	sphere boule2(Vector(0,1000,0),940,Vector(0.85,0.2,0.2));
-	sphere boule3(Vector(0,0,1000),940,Vector(0.1,0.8,0.2));
-	sphere boule4(Vector(0,-1000,0),990,Vector(0.1,0.1,0.95));
+	sphere boule(Vector(0,0,0),10,Vector(0.3,0.4,0.9),true);
+	sphere boule1(Vector(0,0,-1000),940,Vector(0.1,0.8,0.2),false);
+	sphere boule2(Vector(0,1000,0),940,Vector(0.85,0.2,0.2),false);
+	sphere boule3(Vector(0,0,1000),940,Vector(0.1,0.8,0.2),false);
+	sphere boule4(Vector(0,-1000,0),990,Vector(0.1,0.1,0.95),false);
 
 
 	std::vector<sphere> sphere_list = {boule,boule1,boule2,boule3,boule4};
@@ -204,6 +212,7 @@ int main() {
 	double alpha = 2 * M_PI / 360 * 60;
 
 #pragma omp parallel for
+	// pour chaque pixel, on crée un rayon 
 	for (int i = 0; i < H; i++) {
 		for (int j = 0; j < W; j++) {
 			Vector P;
@@ -217,16 +226,32 @@ int main() {
 			z = -W/(2*tan(alpha/2));
 			
 			r = ray(center, Vector(x,y,z));
-
+			// si le rayon intersecte la scène
 			if (scene_1.intersect(r,P,N,t,sphere_index)){
-				Vector albedo = scene_1.sphere_list[sphere_index].albedo;
-				
-				Vector vect_lum = I * albedo / M_PI * std::max(dot((light-P).normalize(),N),0.) / ( 4*M_PI* ((P-light).norm2()) );
+				// On regarde d'abord si le point d'intersection voit la lumière
+				// Création d'un rayon de P vers L
+				ray r2 = ray(P + 0.0001 * N,light-P);
+				Vector P2;
+				Vector N2;
+				double t2;
+				int sphere_index2;
+				if (scene_1.intersect(r2,P2,N2,t2,sphere_index2) and sqr(t2) < (light- P).norm2()){
+					image[(i*W + j) * 3 + 0] = 0;
+					image[(i*W + j) * 3 + 1] = 0;
+					image[(i*W + j) * 3 + 2] = 0;
+				}
+				else {
+					// contient aussi le cas où pas d'inersection entre le 2ème rayon et la scène
+					// intersection, il faut vérifier si l'intersection est avant la lumière
+					Vector albedo = scene_1.sphere_list[sphere_index].albedo;
+					Vector vect_lum = I * albedo / M_PI * std::max(dot((light-P).normalize(),N),0.) / ( 4*M_PI* ((P-light).norm2()) );
 
-				//ramener dans 0 255? prendre le min 255,truc
-				image[(i*W + j) * 3 + 0] = std::min(pow(vect_lum[0],gamma),255.0) ; // RED
-				image[(i*W + j) * 3 + 1] = std::min(pow(vect_lum[1],gamma),255.0) ; // GREEN
-				image[(i*W + j) * 3 + 2] = std::min(pow(vect_lum[2],gamma),255.0) ; // BLUE
+					image[(i*W + j) * 3 + 0] = std::min(pow(vect_lum[0],gamma),255.0) ; // RED
+					image[(i*W + j) * 3 + 1] = std::min(pow(vect_lum[1],gamma),255.0) ; // GREEN
+					image[(i*W + j) * 3 + 2] = std::min(pow(vect_lum[2],gamma),255.0) ; // BLUE
+				}
+
+
 			}
 			else {
 				image[(i*W + j) * 3 + 0] = 0;  // RED
