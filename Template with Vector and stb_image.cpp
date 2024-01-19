@@ -1,5 +1,6 @@
 #include <cmath>
 #include <iostream>
+#include <random>
 
 #define _CRT_SECURE_NO_WARNINGS 1
 #include <vector>
@@ -237,6 +238,11 @@ public:
 
 
 int main() {
+	// Générateur de nbres aléatoires
+	std::default_random_engine generator;
+	std::uniform_real_distribution<double> distribution(0.0,1.0);
+
+
 	int W = 512;
 	int H = 512;
 	std::vector<unsigned char> image(W*H * 3, 0);
@@ -262,7 +268,7 @@ int main() {
 	sphere_list.push_back(boule6);
 
 	Vector light(-10,20,40);
-	double I = 1E9;
+	double I = 2E9;
 
 	scene scene_1(sphere_list,light,I);
 	double gamma = 0.454;
@@ -280,9 +286,9 @@ int main() {
 	for (int i = 0; i < H; i++) {
 		for (int j = 0; j < W; j++) {
 			
-
-			x = j - W/2 + 0.5;
-			y = -i + W/2 - 0.5;
+			// antialiasing : On remplace + 0.5 par + [0;1]
+			x = j - W/2 + distribution(generator);
+			y = -i + W/2 - distribution(generator);
 			z = -W/(2*tan(alpha/2));
 			
 			r = ray(center, Vector(x,y,z));
