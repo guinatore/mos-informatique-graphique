@@ -49,6 +49,9 @@ Vector operator+(const Vector& a, const Vector& b) {
 Vector operator-(const Vector& a, const Vector& b) {
 	return Vector(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
 }
+Vector operator-(const Vector& a) {
+	return Vector(-a[0], -a[1], -a[2]);
+}
 Vector operator*(const Vector& a, double b) {
 	return Vector(a[0]*b, a[1]*b, a[2]*b);
 }
@@ -90,11 +93,14 @@ public:
 		is_mirror = m;
 	}
 
-	sphere(const Vector& v,double r, const Vector& a,bool m = false){
+	sphere(const Vector& v,double r, const Vector& a,bool m = false,bool t = false,double refraction_index = 1.5){
+		// vérifier qu'on ne puisse pas avoir m ET t en meme temps
 		C = v;
 		R = r;
 		albedo = a;
 		is_mirror = m;
+		is_transparent = t;
+		n = refraction_index;
 	}
 
 	bool intersect(const ray& r, Vector &P, Vector &N, double &t){
@@ -129,6 +135,8 @@ public:
 	double R;
 	Vector albedo;
 	bool is_mirror;
+	bool is_transparent;
+	double n;
 };
 
 
@@ -143,14 +151,17 @@ public:
 	}
 	
 	//intersection with the closest sphere
-	bool intersect(const ray& r,  Vector &Pscene, Vector &Nscene,double &tscene, int &index){
+	bool intersect(const ray& r,  Vector &Pscene, Vector &Nscene,double &tscene, int &index, bool count_transp){
 		double min_t = -1.0;
 		int min_index = -1;
 		for (int i=0; i<sphere_list.size(); i++){
 			Vector P;
 			Vector N;
 			double t;
-			if (sphere_list[i].intersect(r,P,N,t)){
+			// On ne compte PAS les intersections avec les objets transparents!!
+			// !count & !t & i   ||   count & i
+			// i & ( !count & !t || count)
+			if ( sphere_list[i].intersect(r,P,N,t) && ( (!sphere_list[i].is_transparent && !count_transp) || count_transp )  ){
 				//std::cout<<" match! ";
 				//t should be = 0 since its false
 				if ( (t < min_t && min_t != -1.0 ) || min_t == -1 ){
@@ -159,7 +170,6 @@ public:
 					min_index = i;
 				}
 			}
-			//std::cout<<i<<" "<<t<<" "<<min_t<<" "<<min_index<<"\n";
 		}
 		//if not found, false
 		if (min_index == -1) {return false;}
@@ -189,13 +199,56 @@ public:
 		}
 
 		// Si intersection : disjonction selon la nature de la surface
-		if (this->intersect(r,P,N,t,sphere_index)){
+		// true car on compte aussi les réflexions
+		if (this->intersect(r,P,N,t,sphere_index,true)){
 			
 			// Si intersection miroir : Récursion
 			if (sphere_list[sphere_index].is_mirror){
-				//rayon réfléchi
+				// rayon réfléchi
+				// On devrait faire gaffe à la normale : Si on vient de l'intérieur d'un cercle on devrait utiliser -N
 				ray reflected(P + 0.0001 * N, r.u - 2 * dot(r.u,N) * N); //Centre décalé, et on inverse la normale
 				return this->get_color(reflected,ray_depth -1);
+			}
+
+			// Si intersection transparents
+			if (sphere_list[sphere_index].is_transparent){
+				double n1;
+				double n2;
+				double orientation = dot(r.u,N); //rayon incident vs normale sortante
+				Vector N_reflexion;
+				if (orientation < 0){ // au pif pour le < ou <=
+					//on entre dans la boule
+					n1 = 1;
+					n2 = sphere_list[sphere_index].n;
+					N_reflexion = N;
+				}
+				else{
+					//on sort de la boule, pour etre dans le schéma de snell-descartes on utilise -N
+					n1 = sphere_list[sphere_index].n;
+					n2 = 1;
+					N_reflexion = -N;
+				}
+				
+				if (sqr(n1/n2) * (1-sqr(dot(r.u,N_reflexion))) > 1){
+					//si réflexion totale, on renvoie le rayon réfléchi. Jamais pu observer ça.
+					//On utilise la normale "signée" pour
+					ray reflected(P + 0.0001 * N_reflexion, r.u - 2 * dot(r.u,N_reflexion) * N_reflexion);
+					return this->get_color(reflected,ray_depth - 1);
+				}
+				else
+				{
+					//sinon on renvoie le rayon transmis
+					//t_t = n1/n2 (i - <i,n>n)
+					//t_n = - sqrt(1 – (n1/n2)² * ( 1 – <i,n>²  ) . n
+					Vector transmitted_tang = n1/n2 * ( r.u - dot(r.u, N_reflexion) * N_reflexion);
+					Vector transmitted_norm = -sqrt(1 - sqr(n1/n2) * (1-sqr(dot(r.u,N_reflexion)))) * N_reflexion;
+
+					ray transmitted(P - 0.0001 * N_reflexion,transmitted_norm + transmitted_tang);
+					return this->get_color(transmitted,ray_depth - 1);
+					
+				}
+				
+
 			}
 
 			// Si intersection diffuse : Calcul classique
@@ -207,7 +260,8 @@ public:
 			Vector N2;
 			double t2;
 			int sphere_index2;
-			if (this->intersect(r2,P2,N2,t2,sphere_index2) and sqr(t2) < (L- P).norm2()){
+			//ici on ne compte pas les transparentes
+			if (this->intersect(r2,P2,N2,t2,sphere_index2,false) and sqr(t2) < (L- P).norm2()){
 				return Vector(0.,0.,0.);
 			}
 			else {
@@ -243,35 +297,41 @@ int main() {
 	std::uniform_real_distribution<double> distribution(0.0,1.0);
 
 
-	int W = 512;
-	int H = 512;
+	int W = 2048;
+	int H = 2048;
 	std::vector<unsigned char> image(W*H * 3, 0);
 
 	Vector center(0, 0, 55);
 
-	sphere boule(Vector(0,0,0),10,Vector(0.3,0.4,0.9),true);
-	sphere boule1(Vector(0,0,-1000),940,Vector(0.1,0.8,0.2),false);
-	sphere boule2(Vector(0,1000,0),940,Vector(0.85,0.2,0.2),false);
-	sphere boule3(Vector(0,0,1000),940,Vector(0.1,0.8,0.2),false);
-	sphere boule4(Vector(0,-1000,0),990,Vector(0.1,0.1,0.95),false);
-	sphere boule5(Vector(1000,0,0),940,Vector(0.9,0.9,0.1),false);
-	sphere boule6(Vector(-1000,0,0),940,Vector(0.1,0.9,0.9),false);
+	sphere boule(Vector(0,0,0),10,Vector(0.3,0.4,0.9),true,false,1.333);
+	
+	sphere background(Vector(0,0,-1000),940,Vector(0.1,0.8,0.2),false,false,1.333);
+	sphere topwall(Vector(0,1000,0),940,Vector(0.85,0.2,0.2),false,false,1.333);
+	sphere foreground(Vector(0,0,1000),940,Vector(0.1,0.8,0.2),false,false,1.333);
+	sphere bottomwall(Vector(0,-1000,0),990,Vector(0.1,0.1,0.95),false,false,1.333);
+	sphere rightwall(Vector(1000,0,0),940,Vector(0.9,0.9,0.1),false,false,1.333);
+	sphere leftwall(Vector(-1000,0,0),940,Vector(0.1,0.9,0.9),false,false,1.333);
+
+	sphere boule7(Vector(10,10,10),5,Vector(0.3,0.4,0.9),false,true,1.333);
 
 
 	std::vector<sphere> sphere_list;
 	sphere_list.push_back(boule);
-	sphere_list.push_back(boule1);
-	sphere_list.push_back(boule2);
-	sphere_list.push_back(boule3);
-	sphere_list.push_back(boule4);
-	sphere_list.push_back(boule5);
-	sphere_list.push_back(boule6);
+	sphere_list.push_back(background);
+	sphere_list.push_back(topwall);
+	sphere_list.push_back(foreground);
+	sphere_list.push_back(bottomwall);
+	sphere_list.push_back(rightwall);
+	sphere_list.push_back(leftwall);
+	//sphere_list.push_back(boule7);
 
 	Vector light(-10,20,40);
 	double I = 2E9;
 
 	scene scene_1(sphere_list,light,I);
 	double gamma = 0.454;
+	//&& !sphere_list[i].is_transparent
+	//condition dans intersect pour compter les sphères transp : pour savoir si on est à l'ombre on en a pas besoin, sinon oui
 
 
 
@@ -292,7 +352,7 @@ int main() {
 			z = -W/(2*tan(alpha/2));
 			
 			r = ray(center, Vector(x,y,z));
-			Vector color(scene_1.get_color(r,5));
+			Vector color(scene_1.get_color(r,15));
 
 			image[(i*W + j) * 3 + 0] = std::min(pow(color[0],gamma),255.0);  // RED
 			image[(i*W + j) * 3 + 1] = std::min(pow(color[1],gamma),255.0);  // GREEN
