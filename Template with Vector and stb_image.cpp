@@ -11,6 +11,10 @@
 #define STB_IMAGE_IMPLEMENTATION
 #include "stb_image.h"
 
+// Générateur de nbres aléatoires
+std::default_random_engine generator;
+std::uniform_real_distribution<double> distribution(0.0,1.0);
+
 static inline double sqr(double x) { return x * x; }
 
 class Vector {
@@ -58,6 +62,9 @@ Vector operator*(const Vector& a, double b) {
 Vector operator*(double a, const Vector& b) {
 	return Vector(a*b[0], a*b[1], a*b[2]);
 }
+Vector operator*(const Vector& a, const Vector& b) {
+	return Vector(a[0]*b[0], a[1]*b[1], a[2]*b[2]);
+}
 Vector operator/(const Vector& a, double b) {
 	return Vector(a[0]/b, a[1]/b, a[2]/b);
 }
@@ -65,6 +72,39 @@ Vector operator/(const Vector& a, double b) {
 double dot(const Vector& a, const Vector& b) {
 	return a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
 }
+
+Vector cross(const Vector& a, const Vector& b){
+	return Vector(a[1]*b[2]-b[1]*a[2],a[2]*b[0]-b[2]*a[0],a[0]*b[1]-b[0]*a[1]);
+}
+
+Vector random_cos(const Vector& N){
+	double r1 = distribution(generator);
+	double r2 = distribution(generator);
+
+	double x = cos(2*M_PI*r1);
+	double y = sin(2*M_PI*r2);
+	double z = sqrt(r2);
+
+	// Selon la plus petite valeur de N on construit T1 orthogonal à N
+	Vector T1;
+	if(std::abs(N[0])<= std::abs(N[1]) && std::abs(N[0])<= std::abs(N[2]) ){
+		T1 = Vector(0,-N[2],N[1]); 
+	}
+	else if(std::abs(N[1])<= std::abs(N[2]) && std::abs(N[1])<= std::abs(N[0]) ){
+		T1 = Vector(-N[2],0,N[0]); 
+	}
+	else {
+		T1 = Vector(-N[1],N[0],0); 
+	}
+
+	T1 = T1.normalize();
+
+	Vector T2 = cross(N,T1); // Pas besoin de le normaliser
+	
+	return z*N + x*T1 + y*T2;
+}
+
+
 
 
 class ray{
@@ -261,8 +301,11 @@ public:
 			double t2;
 			int sphere_index2;
 			//ici on ne compte pas les transparentes
+
+			Vector I_direct(0.,0.,0.);
 			if (this->intersect(r2,P2,N2,t2,sphere_index2,false) and sqr(t2) < (L- P).norm2()){
-				return Vector(0.,0.,0.);
+				// La lumière est bloquée par une surface non transparente, éclairage direct nul
+				I_direct = Vector(0.,0.,0.);
 			}
 			else {
 				// contient aussi le cas où pas d'inersection entre le 2ème rayon et la scène
@@ -270,10 +313,18 @@ public:
 				Vector albedo = sphere_list[sphere_index].albedo;
 				Vector vect_lum = I * albedo / M_PI * std::max(dot((L-P).normalize(),N),0.) / ( 4*M_PI* ((P-L).norm2()) );
 
-				return vect_lum;
+				I_direct =  vect_lum;
 			}
 
+			
+			// Calcul de l'éclairage indirect
+			Vector I_indirect(0.,0.,0.);
+			ray wi(Vector(P + 0.0001*N),random_cos(N)); // besoin d'inverser la normale ou pas?
+			// albedo* getcolor(wi) et wi suit cos(theta)/pi
+			I_indirect += sphere_list[sphere_index].albedo * get_color(wi,ray_depth-1);
 
+
+			return I_direct + I_indirect;
 		}
 		// Si pas d'intersection, rien (mais ne devrait pas arriver, c'est une scène fermée)
 		else {
@@ -292,13 +343,9 @@ public:
 
 
 int main() {
-	// Générateur de nbres aléatoires
-	std::default_random_engine generator;
-	std::uniform_real_distribution<double> distribution(0.0,1.0);
-
-
-	int W = 2048;
-	int H = 2048;
+	int W = 512;
+	int H = 512;
+	int ray_count = 128;
 	std::vector<unsigned char> image(W*H * 3, 0);
 
 	Vector center(0, 0, 55);
@@ -323,16 +370,13 @@ int main() {
 	sphere_list.push_back(bottomwall);
 	sphere_list.push_back(rightwall);
 	sphere_list.push_back(leftwall);
-	//sphere_list.push_back(boule7);
+	sphere_list.push_back(boule7);
 
 	Vector light(-10,20,40);
 	double I = 2E9;
 
 	scene scene_1(sphere_list,light,I);
 	double gamma = 0.454;
-	//&& !sphere_list[i].is_transparent
-	//condition dans intersect pour compter les sphères transp : pour savoir si on est à l'ombre on en a pas besoin, sinon oui
-
 
 
 	ray r = ray(Vector(0,0,0),Vector(1,0,0));
@@ -346,18 +390,31 @@ int main() {
 	for (int i = 0; i < H; i++) {
 		for (int j = 0; j < W; j++) {
 			
-			// antialiasing : On remplace + 0.5 par + [0;1]
-			x = j - W/2 + distribution(generator);
-			y = -i + W/2 - distribution(generator);
-			z = -W/(2*tan(alpha/2));
-			
-			r = ray(center, Vector(x,y,z));
-			Vector color(scene_1.get_color(r,15));
+			Vector color(0.,0.,0.);
+			for (int ray_index = 0;ray_index<ray_count;ray_index++){
+
+				// antialiasing : On remplace + 0.5 par + [0;1]
+				double r1 = distribution(generator);
+				double r2 = distribution(generator);
+
+				double g1 = sqrt(-2 * log( r1 )) * cos( 2 * M_PI*r2 ) * 0.5 ;
+				double g2 = sqrt(-2 * log( r1 )) * sin( 2 * M_PI*r2 ) * 0.5 ;
+
+
+				x = j - W/2 + 0.5 + g1;
+				y = -i + W/2 - 0.5 + g2;
+				z = -W/(2*tan(alpha/2));
+				
+				r = ray(center, Vector(x,y,z));
+				
+				// On additionne la contribution du chemin à l'éclairage.
+				color += scene_1.get_color(r,5)/ray_count;
+			}
 
 			image[(i*W + j) * 3 + 0] = std::min(pow(color[0],gamma),255.0);  // RED
 			image[(i*W + j) * 3 + 1] = std::min(pow(color[1],gamma),255.0);  // GREEN
 			image[(i*W + j) * 3 + 2] = std::min(pow(color[2],gamma),255.0);  // BLUE
-						
+		
 		}
 	}
 	stbi_write_png("image.png", W, H, 3, &image[0], 0);
