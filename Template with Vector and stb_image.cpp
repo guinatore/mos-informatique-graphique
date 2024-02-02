@@ -343,8 +343,8 @@ public:
 
 
 int main() {
-	int W = 512;
-	int H = 512;
+	int W = 2048;
+	int H = 2048;
 	int ray_count = 128;
 	std::vector<unsigned char> image(W*H * 3, 0);
 
@@ -397,8 +397,8 @@ int main() {
 				double r1 = distribution(generator);
 				double r2 = distribution(generator);
 
-				double g1 = sqrt(-2 * log( r1 )) * cos( 2 * M_PI*r2 ) * 0.5 ;
-				double g2 = sqrt(-2 * log( r1 )) * sin( 2 * M_PI*r2 ) * 0.5 ;
+				double g1 = sqrt(-2 * log( r1 )) * cos( 2 * M_PI*r2 ) * 1 ;
+				double g2 = sqrt(-2 * log( r1 )) * sin( 2 * M_PI*r2 ) * 1 ;
 
 
 				x = j - W/2 + 0.5 + g1;
@@ -408,7 +408,7 @@ int main() {
 				r = ray(center, Vector(x,y,z));
 				
 				// On additionne la contribution du chemin à l'éclairage.
-				color += scene_1.get_color(r,5)/ray_count;
+				color += scene_1.get_color(r,15)/ray_count;
 			}
 
 			image[(i*W + j) * 3 + 0] = std::min(pow(color[0],gamma),255.0);  // RED
