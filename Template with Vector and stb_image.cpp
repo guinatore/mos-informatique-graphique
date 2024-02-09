@@ -1,4 +1,5 @@
 #include <cmath>
+#include <ctime>
 #include <iostream>
 #include <random>
 
@@ -78,6 +79,7 @@ Vector cross(const Vector& a, const Vector& b){
 }
 
 Vector random_cos(const Vector& N){
+	// N doit etre normalisé !!
 	double r1 = distribution(generator);
 	double r2 = distribution(generator);
 
@@ -134,6 +136,7 @@ public:
 	}
 
 	sphere(const Vector& v,double r, const Vector& a,bool m = false,bool t = false,double refraction_index = 1.5){
+		//centre, rayon, albedo, miroir,transparent, refraction
 		// vérifier qu'on ne puisse pas avoir m ET t en meme temps
 		C = v;
 		R = r;
@@ -182,16 +185,17 @@ public:
 
 class scene{
 public:
-	scene(std::vector<sphere> sl,Vector l,double i){
+	scene(std::vector<sphere> sl,double i){
 		for (int i =0;i<sl.size();i++){
 			sphere_list.push_back(sl[i]);
 		}
-		L = l;
 		I = i;
 	}
 	
 	//intersection with the closest sphere
 	bool intersect(const ray& r,  Vector &Pscene, Vector &Nscene,double &tscene, int &index, bool count_transp){
+		// count_transp à true si une intersection transparente compte comme une intersection
+		// count_transp à false si une intersection transparente est ignorée
 		double min_t = -1.0;
 		int min_index = -1;
 		for (int i=0; i<sphere_list.size(); i++){
@@ -221,10 +225,9 @@ public:
 		Nscene =  (Pscene - sphere_list[index].C).normalize();
 		return true;
 		
-		// s'assurer que P, N,t et index correspondent bien au minimum de distance trouvé
 	}
 
-	Vector get_color(const ray& r, int ray_depth){
+	Vector get_color(const ray& r, int ray_depth,bool was_diffuse_interaction){
 		//Calcul de l'intersection
 		Vector P;
 		Vector N;
@@ -247,10 +250,10 @@ public:
 				// rayon réfléchi
 				// On devrait faire gaffe à la normale : Si on vient de l'intérieur d'un cercle on devrait utiliser -N
 				ray reflected(P + 0.0001 * N, r.u - 2 * dot(r.u,N) * N); //Centre décalé, et on inverse la normale
-				return this->get_color(reflected,ray_depth -1);
+				return this->get_color(reflected,ray_depth -1,false);
 			}
 
-			// Si intersection transparents
+			// Si intersection transparente
 			if (sphere_list[sphere_index].is_transparent){
 				double n1;
 				double n2;
@@ -273,7 +276,7 @@ public:
 					//si réflexion totale, on renvoie le rayon réfléchi. Jamais pu observer ça.
 					//On utilise la normale "signée" pour
 					ray reflected(P + 0.0001 * N_reflexion, r.u - 2 * dot(r.u,N_reflexion) * N_reflexion);
-					return this->get_color(reflected,ray_depth - 1);
+					return this->get_color(reflected,ray_depth - 1,false);
 				}
 				else
 				{
@@ -284,7 +287,7 @@ public:
 					Vector transmitted_norm = -sqrt(1 - sqr(n1/n2) * (1-sqr(dot(r.u,N_reflexion)))) * N_reflexion;
 
 					ray transmitted(P - 0.0001 * N_reflexion,transmitted_norm + transmitted_tang);
-					return this->get_color(transmitted,ray_depth - 1);
+					return this->get_color(transmitted,ray_depth - 1,false);
 					
 				}
 				
@@ -294,6 +297,7 @@ public:
 			// Si intersection diffuse : Calcul classique
 
 			// On regarde d'abord si le point d'intersection voit la lumière
+			/*
 			// Création d'un rayon de P vers L
 			ray r2 = ray(P + 0.0001 * N,L-P);
 			Vector P2;
@@ -308,23 +312,74 @@ public:
 				I_direct = Vector(0.,0.,0.);
 			}
 			else {
-				// contient aussi le cas où pas d'inersection entre le 2ème rayon et la scène
+				// contient aussi le cas où pas d'intersection entre le 2ème rayon et la scène
 				// intersection, il faut vérifier si l'intersection est avant la lumière
 				Vector albedo = sphere_list[sphere_index].albedo;
 				Vector vect_lum = I * albedo / M_PI * std::max(dot((L-P).normalize(),N),0.) / ( 4*M_PI* ((P-L).norm2()) );
 
 				I_direct =  vect_lum;
 			}
+			//  If lumière = 0: return I/4pi²r²
+			*/
 
-			
-			// Calcul de l'éclairage indirect
-			Vector I_indirect(0.,0.,0.);
-			ray wi(Vector(P + 0.0001*N),random_cos(N)); // besoin d'inverser la normale ou pas?
-			// albedo* getcolor(wi) et wi suit cos(theta)/pi
-			I_indirect += sphere_list[sphere_index].albedo * get_color(wi,ray_depth-1);
+			////// Cas de l'intersection avec une matière diffuse
+			if (sphere_index == 0){
+				// Si interaction diffuse : On renvoie 0 pour éviter de compter 2 fois la source (I_direct et I_indirect)
+				if (was_diffuse_interaction){return Vector(0.,0.,0.);}
+				// Si intersection avec la lumière : On renvoit la lumière ! (Pondérée par l'élément de surface)
+				else {return I*sphere_list[0].albedo /(4 * M_PI * M_PI * sphere_list[0].R * sphere_list[0].R ) ;}
+				
+			}
+			else{
+				//// Calcul de l'éclairage direct : On intègre l'éclairage de la sphère source
+				Vector I_direct(0.,0.,0.);
+
+				Vector vect_light = (sphere_list[0].C - P).normalize(); // vecteur de P vers L
+				// Point sur la lumière: on utilise random_cos qu'on scale.
+				Vector N_prime = random_cos(-vect_light);
+				Vector P_prime = sphere_list[0].C + sphere_list[0].R * N_prime; 
+				// Rayon incident
+				Vector wi_direct = P_prime - P;
+				wi_direct = wi_direct.normalize();
+
+				// On renvoie un rayon de P vers P'. pour le calcul du terme de visibilité
+				bool visibility = false;
+				ray r2(P + 0.0001 * N , wi_direct); // Rayon de P vers P'
+				double d2 = (P_prime - P).norm2(); // distance PP'²
+				Vector P2;
+				Vector N2;
+				double t2;
+				int sphere_index2;
+				// Il y aura toujours une intersection(avec la lumière), mais on veut savoir si elle se fait avant la lumière
+				if (this->intersect(r2,P2,N2,t2,sphere_index2,false)){
+					visibility = sqr(t2 + 0.01) > d2; // P voit la lumière ssi l'intersection est plus loin que la lumière
+				}
+				else{
+					// Au cas où on n'intersecte rien (Ne devrait pas arriver)
+					visibility = false;
+				}
 
 
-			return I_direct + I_indirect;
+				// Contribution ou non de l'éclairage direct selon la visibilité. Pas besoin de faire les calculs si pas
+				// de visibilité, on laisse I_direct à 0.
+				if (visibility){
+					double light_intensity = I / (4 * M_PI * M_PI * sphere_list[0].R * sphere_list[0].R); // intensité de la lumière, normalisée par l'élément de surface
+					Vector albedo = sphere_list[sphere_index].albedo/M_PI; // albedo de la sphere considérée
+					double form_factor = std::max(0.,dot(N,wi_direct))*std::max(0.,dot(N_prime,-wi_direct))/(d2);
+					double pdf = std::max(0.,dot(N_prime,-vect_light)) / ( M_PI * sphere_list[0].R * sphere_list[0].R ) ;
+
+					I_direct = light_intensity * albedo * form_factor / pdf;
+				}
+
+				//// Calcul de l'éclairage indirect
+				Vector I_indirect(0.,0.,0.);
+				ray wi_indirect(Vector(P + 0.0001*N),random_cos(N)); 
+				// albedo* getcolor(wi) et wi suit cos(theta)/pi
+				I_indirect += sphere_list[sphere_index].albedo * get_color(wi_indirect,ray_depth-1, true); // Seul cas où on signale qu'on ne compte pas la lumière
+				return I_direct + I_indirect;
+			}
+
+
 		}
 		// Si pas d'intersection, rien (mais ne devrait pas arriver, c'est une scène fermée)
 		else {
@@ -336,46 +391,49 @@ public:
 
 
 	std::vector<sphere> sphere_list;
-	Vector L;
 	double I;
 };
 
 
 
 int main() {
+	time_t time_start = time(NULL);
+
 	int W = 2048;
 	int H = 2048;
-	int ray_count = 128;
+	int ray_count = 512;
 	std::vector<unsigned char> image(W*H * 3, 0);
 
 	Vector center(0, 0, 55);
 
-	sphere boule(Vector(0,0,0),10,Vector(0.3,0.4,0.9),true,false,1.333);
-	
-	sphere background(Vector(0,0,-1000),940,Vector(0.1,0.8,0.2),false,false,1.333);
-	sphere topwall(Vector(0,1000,0),940,Vector(0.85,0.2,0.2),false,false,1.333);
-	sphere foreground(Vector(0,0,1000),940,Vector(0.1,0.8,0.2),false,false,1.333);
+	// La lumière est la première boule
+	sphere light_sphere(Vector(-10,20,40),10,Vector(1.,1.,1.),false,false,1.333);
+	sphere boule1(Vector(0,0,0),10,Vector(0.3,0.4,0.9),true,false,1.333); // miroir
+	sphere boule2(Vector(-20,0,0),10,Vector(0.3,0.4,0.9),false,true,1.333); //transparente 
+	sphere boule3(Vector(20,0,0),10,Vector(0.3,0.4,0.9),false,false,1.333); // solide
+	sphere background(Vector(0,0,-1000),940,Vector(0.85,0.1,0.1),false,false,1.333);
+	sphere topwall(Vector(0,1000,0),940,Vector(0.1,0.9,0.2),false,false,1.333);
+	sphere foreground(Vector(0,0,1000),940,Vector(0.9,0.3,0.1),false,false,1.333);
 	sphere bottomwall(Vector(0,-1000,0),990,Vector(0.1,0.1,0.95),false,false,1.333);
-	sphere rightwall(Vector(1000,0,0),940,Vector(0.9,0.9,0.1),false,false,1.333);
-	sphere leftwall(Vector(-1000,0,0),940,Vector(0.1,0.9,0.9),false,false,1.333);
-
-	sphere boule7(Vector(10,10,10),5,Vector(0.3,0.4,0.9),false,true,1.333);
+	sphere rightwall(Vector(1000,0,0),940,Vector(0.95,0.95,.07),false,false,1.333);
+	sphere leftwall(Vector(-1000,0,0),940,Vector(0.07,0.95,0.95),false,false,1.333);
 
 
 	std::vector<sphere> sphere_list;
-	sphere_list.push_back(boule);
+	sphere_list.push_back(light_sphere);
+	sphere_list.push_back(boule1);
+	sphere_list.push_back(boule2);
+	sphere_list.push_back(boule3);
 	sphere_list.push_back(background);
 	sphere_list.push_back(topwall);
 	sphere_list.push_back(foreground);
 	sphere_list.push_back(bottomwall);
 	sphere_list.push_back(rightwall);
 	sphere_list.push_back(leftwall);
-	sphere_list.push_back(boule7);
 
-	Vector light(-10,20,40);
-	double I = 2E9;
+	double I = 3E9;
 
-	scene scene_1(sphere_list,light,I);
+	scene scene_1(sphere_list,I);
 	double gamma = 0.454;
 
 
@@ -408,7 +466,7 @@ int main() {
 				r = ray(center, Vector(x,y,z));
 				
 				// On additionne la contribution du chemin à l'éclairage.
-				color += scene_1.get_color(r,15)/ray_count;
+				color += scene_1.get_color(r,15,false)/ray_count;
 			}
 
 			image[(i*W + j) * 3 + 0] = std::min(pow(color[0],gamma),255.0);  // RED
@@ -418,6 +476,10 @@ int main() {
 		}
 	}
 	stbi_write_png("image.png", W, H, 3, &image[0], 0);
+
+	time_t time_end = time(NULL);
+	double time_diff_min = difftime(time_end, time_start)/60;
+	std::cout << "Time elapsed : "<< time_diff_min << " min.";
 
 	return 0;
 }
