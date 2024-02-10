@@ -414,9 +414,9 @@ public:
 int main() {
 	time_t time_start = time(NULL);
 
-	int W = 512;
-	int H = 512;
-	int ray_count = 128;
+	int W = 2048;
+	int H = 2048;
+	int ray_count = 1024;
 	std::vector<unsigned char> image(W*H * 3, 0);
 
 	Vector center(0, 0, 55);
