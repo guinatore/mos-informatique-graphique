@@ -280,14 +280,29 @@ public:
 				}
 				else
 				{
-					//sinon on renvoie le rayon transmis
-					//t_t = n1/n2 (i - <i,n>n)
-					//t_n = - sqrt(1 – (n1/n2)² * ( 1 – <i,n>²  ) . n
-					Vector transmitted_tang = n1/n2 * ( r.u - dot(r.u, N_reflexion) * N_reflexion);
-					Vector transmitted_norm = -sqrt(1 - sqr(n1/n2) * (1-sqr(dot(r.u,N_reflexion)))) * N_reflexion;
+					//sinon : on renvoie le rayon transmis ou réfléchi, selon la pondération des coefficients de transmission
+					double k0 = sqr(n1-n2)/sqr(n1+n2);
+					double R = k0 + (1-k0)*pow(1-abs(dot(N,r.u)),5); //proba de réflexion
 
-					ray transmitted(P - 0.0001 * N_reflexion,transmitted_norm + transmitted_tang);
-					return this->get_color(transmitted,ray_depth - 1,false);
+					if (distribution(generator) < R){
+						// Réflexion //check la formule
+						ray reflected(P + 0.0001 * N_reflexion, r.u - 2 * dot(r.u,N_reflexion) * N_reflexion);
+						return this->get_color(reflected,ray_depth - 1,false);
+
+					}
+					else{
+						// Transmission
+						//t_t = n1/n2 (i - <i,n>n)
+						//t_n = - sqrt(1 – (n1/n2)² * ( 1 – <i,n>²  ) . n
+						Vector transmitted_tang = n1/n2 * ( r.u - dot(r.u, N_reflexion) * N_reflexion);
+						Vector transmitted_norm = -sqrt(1 - sqr(n1/n2) * (1-sqr(dot(r.u,N_reflexion)))) * N_reflexion;
+
+						ray transmitted(P - 0.0001 * N_reflexion,transmitted_norm + transmitted_tang);
+						return this->get_color(transmitted,ray_depth - 1,false);
+
+					}
+
+					
 					
 				}
 				
@@ -351,7 +366,7 @@ public:
 				double t2;
 				int sphere_index2;
 				// Il y aura toujours une intersection(avec la lumière), mais on veut savoir si elle se fait avant la lumière
-				if (this->intersect(r2,P2,N2,t2,sphere_index2,false)){
+				if (this->intersect(r2,P2,N2,t2,sphere_index2,true)){
 					visibility = sqr(t2 + 0.01) > d2; // P voit la lumière ssi l'intersection est plus loin que la lumière
 				}
 				else{
@@ -399,9 +414,9 @@ public:
 int main() {
 	time_t time_start = time(NULL);
 
-	int W = 2048;
-	int H = 2048;
-	int ray_count = 512;
+	int W = 512;
+	int H = 512;
+	int ray_count = 128;
 	std::vector<unsigned char> image(W*H * 3, 0);
 
 	Vector center(0, 0, 55);
