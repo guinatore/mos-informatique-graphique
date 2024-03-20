@@ -675,9 +675,9 @@ public:
 		}
 
 		// Si pas d'intersection, rien (mais ne devrait pas arriver, c'est une scène fermée)
-		// En pratique, arrive 3-5 fois pour 512x512p, 128 rpp
+		// En pratique, arrive 3-5 fois pour 512x512p, 128 spp
 		else {
-			std::cout<<"Warning: No intersection for ray "<<ray_depth<<std::endl;
+			//std::cout<<"Warning: No intersection for ray "<<ray_depth<<std::endl;
 			return Vector(0.,0.,0.);
 		}
 			
@@ -692,10 +692,10 @@ public:
 int main() {
 	time_t time_start = time(NULL);
 
-	int W = 256;
-	int H = 256;
-	int ray_count = 16;
-	int ray_depth = 0;
+	int W = 1024;
+	int H = 1024;
+	int ray_count = 256;
+	int ray_depth = 5;
 	std::vector<unsigned char> image(W*H * 3, 0);
 
 	Vector center(0, 0, 55);
@@ -737,23 +737,21 @@ int main() {
 
 	scene scene_1(object_list,I);
 	double gamma = 0.454;
-
-
-	ray r = ray(Vector(0,0,0),Vector(1,0,0));
-	double x;
-	double y;
-	double z;
 	double alpha = 2 * M_PI / 360 * 60;
 
 #pragma omp parallel for
 	// pour chaque pixel, on crée un rayon 
 	for (int i = 0; i < H; i++) {
 		for (int j = 0; j < W; j++) {
-			
+			double x;
+			double y;
+			double z;
+			ray r = ray(Vector(0,0,0),Vector(1,0,0));
+
 			Vector color(0.,0.,0.);
 			for (int ray_index = 0;ray_index<ray_count;ray_index++){
 
-				// antialiasing : On remplace + 0.5 par + [0;1]
+				// antialiasing : On remplace + 0.5 par une gaussienne autour de 0.5
 				double r1 = distribution(generator);
 				double r2 = distribution(generator);
 
