@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include <string>
 #include <algorithm>
+#include <list>
 
 #define _CRT_SECURE_NO_WARNINGS 1
 #include <vector>
@@ -132,7 +133,7 @@ public:
 		n = refraction_index;
 	}
 
-	virtual bool intersect(const ray& r, Vector &P, Vector &N, double &t) = 0; 
+	virtual bool intersect(const ray& r, Vector &P, Vector &N, double &t) const = 0; 
 	
 	Vector albedo;
 	bool is_mirror;
@@ -151,7 +152,7 @@ public:
 		R = r;
 	}
 
-	virtual bool intersect(const ray& r, Vector &P, Vector &N, double &t){
+	virtual bool intersect(const ray& r, Vector &P, Vector &N, double &t) const {
 		// renvoyer la normale : CP normalisé
 		double b = 2*dot(r.u , r.O - C) ;
 		double c = (r.O - C).norm2() - R*R;
@@ -203,10 +204,27 @@ class BoundingBox{
 		this->min_x = min_x;
 		this->min_y = min_y;
 		this->min_z = min_z;
+
+		//argmax à la main pour la dimension de séparation
+		double x_length = max_x - min_x;
+		double y_length = max_y - min_y;
+		double z_length = max_z - min_z;
+		if (x_length >= y_length && x_length >= z_length){
+			longest_axis = 0;
+			separation_coord = min_x + x_length/2;
+		}
+		else if (y_length >= x_length && y_length >= z_length){
+			longest_axis = 1;
+			separation_coord = min_y + y_length/2;
+		}
+		else {
+			longest_axis = 2;
+			separation_coord = min_z + z_length/2;
+		}
 	}
 
 	// Intersection boite/rayon , en prenant en compte le fait que les plans sont finis
-	bool intersect(const ray& r) const {
+	bool intersect(const ray& r, double &t) const {
 		//Crédits à Baptiste Perreyon pour cette méthode
 
 		Vector invU = Vector(1 / r.u[0], 1 / r.u[1], 1 / r.u[2]);
@@ -229,50 +247,117 @@ class BoundingBox{
 		double tZMin = std::min(tZ1, tZ2);
 		double tZMax = std::max(tZ1, tZ2);
 
-		// intersection des intervalles non vide
+		// intersection des intervalles non vide : le max des min correspond au premier point d'intersection
 
-		//il faut aussi que t soit positif!!!
-		return std::min({ tXMax, tYMax, tZMax }) > std::max({ tXMin, tYMin, tZMin }) && std::max({ tXMin, tYMin, tZMin }) >= 0;
+		t =  std::max({ tXMin, tYMin, tZMin });
+		return std::min({ tXMax, tYMax, tZMax }) > t; // && std::max({ tXMin, tYMin, tZMin }) >= 0;
 		
 	}
-	
+
+	bool is_mispositioned(const Vector& barycenter){
+		return barycenter[longest_axis] > separation_coord;
+	}
+
+	// Coordonnées de base de la bbox
 	double max_x, max_y, max_z, min_x, min_y, min_z;
+	
+	// Données utiles pour la bvh
+	int longest_axis;
+	double separation_coord;
+
+};
+
+//Bounding volume hierarchy
+//Définit juste la structure, elle est construite dans trianglemesh (là où on a accès aux triangles)
+class BVH {
+	public:
+	explicit BVH(){
+		left_child = nullptr;
+		right_child = nullptr;
+	}
+
+	BoundingBox bbox;
+	BVH* left_child;
+	BVH* right_child;
+	int start_index;
+	int end_index;
+
 };
 
 class TriangleMesh : public Geometry  {
 public:
     ~TriangleMesh() {}
-	TriangleMesh(): Geometry() {}
-	//TriangleMesh(const Vector& a,bool m = false,bool t = false,double refraction_index = 1.5): Geometry(a,m,t,refraction_index) {};
+	TriangleMesh(): Geometry() {root = new BVH();}
     
-	virtual bool intersect(const ray& r, Vector &P, Vector &N, double &t){
-		if (!bbox.intersect(r)){return false;}
-
-		// On ne renvoie pas l'indice du triangle encore. (Comment fera-t-on pour la couleur?)
+	virtual bool intersect(const ray& r, Vector &P, Vector &N, double &t) const {
 		t = -1.0; // Min tracker
-		for (int i = 0; i< indices.size() ; i++){ // pour tous les triangles
-			Vector A = vertices[indices[i].vtxi];
-			Vector e1 = vertices[indices[i].vtxj] - A; // B - A : j-i
-			Vector e2 = vertices[indices[i].vtxk] - A;
-			Vector temp_N = cross(e1,e2);
+		double bbox_t;
 
-			double beta = dot(e2,cross(A-r.O , r.u))/dot(r.u,temp_N);
-			double gamma = - dot(e1,cross(A-r.O , r.u))/dot(r.u,temp_N);
-			double alpha = 1 - gamma - beta;
+		// Vaguement inspiré du poly 
+		// Intersection rayon/bvh : On réduit les possibilités de recherche à start_index / end_index
+		if (!root->bbox.intersect(r,bbox_t)){return false;}
 
-			if (0 <= beta && beta <= 1 && 0 <= alpha && alpha <= 1 && 0 <= gamma && gamma <= 1 ){
-				// Triangle intercepted. But is it closer?
-				double temp_t = dot(A - r.O, temp_N)/dot(r.u, temp_N);
+		// Parcours en profondeur
+		
+		std::list<BVH*> nodes_to_visit; // std::list : insersion/suppresion à temps constant!! 
+		nodes_to_visit.push_back(root);
+		
+		while (!nodes_to_visit.empty()){
+			BVH* current_node = nodes_to_visit.back();
+			nodes_to_visit.pop_back();
+			// Si le noeud contient au moins un enfant, ce n'est pas un noeud terminal
+			// Il contient alors 2 enfants et on peut tester leur bbox
+			if (current_node->left_child){
+				// Si la bbox est intersectée, alors on ajoute le noeud à visiter
+				if (current_node->left_child->bbox.intersect(r,bbox_t)){
+					// Pas la peine d'ajouter la bbox si elle est plus loin que le meilleur triangle
+					if ( (bbox_t < t && t != -1.0) || t == -1.0 ){
+						nodes_to_visit.push_back(current_node->left_child); // back car parcours en profondeur, et curent node est le back()
+					}
+				}
 
-				if (temp_t > 0){
-					if ((temp_t < t && t != -1.0 ) || t == -1.0 ){
-						//Update return values
-						t = temp_t;
-						N = temp_N;
-						P = r.O + t * r.u;
+				if (current_node->right_child->bbox.intersect(r,bbox_t)){
+					if ( (bbox_t < t && t != -1.0) || t == -1.0){
+						nodes_to_visit.push_back(current_node->right_child);
 					}
 				}
 			}
+			// Si le noeud ne contient pas d'enfants, on teste les feuilles (calcul classique)
+			else {
+				for (int i = current_node->start_index; i< current_node->end_index ; i++){ // pour tous les triangles
+					Vector A = vertices[indices[i].vtxi];
+					Vector e1 = vertices[indices[i].vtxj] - A; // B - A : j-i
+					Vector e2 = vertices[indices[i].vtxk] - A;
+					Vector temp_N = cross(e1,e2);
+
+					double beta = dot(e2,cross(A-r.O , r.u))/dot(r.u,temp_N);
+					double gamma = - dot(e1,cross(A-r.O , r.u))/dot(r.u,temp_N);
+					double alpha = 1 - gamma - beta;
+
+					if (0 <= beta && beta <= 1 && 0 <= alpha && alpha <= 1 && 0 <= gamma && gamma <= 1 ){
+						// Triangle intercepted. But is it closer?
+						double temp_t = dot(A - r.O, temp_N)/dot(r.u, temp_N);
+
+						if (temp_t > 0){
+							if ((temp_t < t && t != -1.0 ) || t == -1.0 ){
+								//Update return values
+								t = temp_t;
+								N = temp_N;
+								//shading normal : Interpolate A,B and N normals
+								//N = (alpha * normals[indices[i].vtxi] + beta * normals[indices[i].vtxj] + gamma * normals[indices[i].vtxk]).normalize();
+
+								P = r.O + t * r.u;
+							}
+						}
+					}
+				
+				// Fin for(start/end)
+				}
+
+			// Fin else : t est update pour le noeud terminal considéré
+			}
+
+		// Fin parcours de l'arbre			
 		}
 
 		if (t == -1.0){return false;} // Si t n'a pas été modifié
@@ -286,15 +371,68 @@ public:
 		}
 	}
 
-	void set_bounding_box(){
-		double min_x = (*std::min_element(vertices.begin(), vertices.end(), [](const Vector& v1, const Vector& v2) { return v1[0] < v2[0]; }))[0];
-        double min_y = (*std::min_element(vertices.begin(), vertices.end(), [](const Vector& v1, const Vector& v2) { return v1[1] < v2[1]; }))[1];
-        double min_z = (*std::min_element(vertices.begin(), vertices.end(), [](const Vector& v1, const Vector& v2) { return v1[2] < v2[2]; }))[2];
-        double max_x = (*std::max_element(vertices.begin(), vertices.end(), [](const Vector& v1, const Vector& v2) { return v1[0] < v2[0]; }))[0];
-        double max_y = (*std::max_element(vertices.begin(), vertices.end(), [](const Vector& v1, const Vector& v2) { return v1[1] < v2[1]; }))[1];
-        double max_z = (*std::max_element(vertices.begin(), vertices.end(), [](const Vector& v1, const Vector& v2) { return v1[2] < v2[2]; }))[2];
+	Vector get_barycentre(int triangle_index){
+		return ( vertices[indices[triangle_index].vtxi] + vertices[indices[triangle_index].vtxj] + vertices[indices[triangle_index].vtxk] )/ 3;
+	}
 
-        bbox = BoundingBox(max_x,max_y,max_z,min_x,min_y,min_z);
+	BoundingBox compute_bounding_box(int start_index, int end_index){
+		// Au lieu d'itérer sur tous les triangles, on itère uniquement sur
+		// ceux de la partition. On crée une liste contenant les triangles de la partition
+		std::vector<Vector> vertice_partition;
+		for (int triangle_index = start_index; triangle_index< end_index; triangle_index++){
+			vertice_partition.push_back(vertices[indices[triangle_index].vtxi]);
+			vertice_partition.push_back(vertices[indices[triangle_index].vtxj]);
+			vertice_partition.push_back(vertices[indices[triangle_index].vtxk]);
+		}
+
+		// Crédit Baptiste Perreyon pour cette formule
+		double min_x = (*std::min_element(vertice_partition.begin() , vertice_partition.end() , [](const Vector& v1, const Vector& v2) { return v1[0] < v2[0]; }))[0];
+		double min_y = (*std::min_element(vertice_partition.begin() , vertice_partition.end() , [](const Vector& v1, const Vector& v2) { return v1[1] < v2[1]; }))[1];
+		double min_z = (*std::min_element(vertice_partition.begin() , vertice_partition.end() , [](const Vector& v1, const Vector& v2) { return v1[2] < v2[2]; }))[2];
+		double max_x = (*std::max_element(vertice_partition.begin() , vertice_partition.end() , [](const Vector& v1, const Vector& v2) { return v1[0] < v2[0]; }))[0];
+		double max_y = (*std::max_element(vertice_partition.begin() , vertice_partition.end() , [](const Vector& v1, const Vector& v2) { return v1[1] < v2[1]; }))[1];
+		double max_z = (*std::max_element(vertice_partition.begin() , vertice_partition.end() , [](const Vector& v1, const Vector& v2) { return v1[2] < v2[2]; }))[2];
+		
+		return BoundingBox(max_x,max_y,max_z,min_x,min_y,min_z);
+	}
+
+	//Méthode d'initialisation de la bbox, dans main()
+	void compute_bvh(){
+		this->set_bvh(root,0,indices.size());
+	}
+
+	// Calcule récursivement les BVH en partitionnant les triangles de start à end.
+	void set_bvh(BVH* node, int start_index, int end_index){ 
+		// But : Initialiser les attributs de node, et lancer cette meme fonction pour ses enfants
+		node->start_index = start_index;
+		node->end_index = end_index;
+		node->bbox = compute_bounding_box(start_index,end_index);
+
+		// Partitionner les indices etre start et end, pour qu'une moitié géographique soit d'un coté et l'autre de l'autre
+		// Déjà on calcule selon quel axe on va couper (fait dans le constructeur de bbox)
+		int pivot_index = start_index;
+		for (int triangle_index = start_index; triangle_index < end_index; triangle_index++){
+			Vector barycentre = get_barycentre(triangle_index);
+			if (node->bbox.is_mispositioned(barycentre)){
+				// Si le triangle en court est du mauvais coté, on le ramène à gauche du pivot
+				std::swap(indices[triangle_index],indices[pivot_index]);
+				pivot_index++;
+			}
+			// Sinon pivot index ne bouge pas car on a pas eu besoin de swap
+			
+		}
+
+		// Critère d'arret :  pas de partition possible ou moins de 5 feuilles.
+		if (pivot_index <= start_index || pivot_index >= end_index - 1 || end_index - start_index < 5 ){
+			return;
+		}
+		// Générer les enfants grâce à un appel récursif 
+		// C'est ici qu'on les initialise, je ne sais pas si c'est très propre 
+		node->left_child = new BVH;
+		node->right_child = new BVH;
+
+		set_bvh(node->left_child ,start_index,pivot_index);
+		set_bvh(node->right_child ,pivot_index,end_index);
 	}
 
     void readOBJ(const char* obj) {
@@ -463,9 +601,7 @@ public:
                         }
                     }
                 }
- 
             }
- 
         }
         fclose(f);
  
@@ -476,7 +612,7 @@ public:
     std::vector<Vector> normals;
     std::vector<Vector> uvs;
     std::vector<Vector> vertexcolors;
-	BoundingBox bbox;
+	BVH* root;
     
 };
 
@@ -491,7 +627,7 @@ public:
 	}
 	
 	//intersection with the closest sphere/mesh
-	bool intersect(const ray& r,  Vector &Pscene, Vector &Nscene,double &tscene, int &index){
+	bool intersect(const ray& r,  Vector &Pscene, Vector &Nscene,double &tscene, int &index) const {
 		double min_t = -1.0;
 		int min_index = -1;
 		Vector min_N;
@@ -521,7 +657,7 @@ public:
 		return true;	
 	}
 
-	Vector get_color(const ray& r, int ray_depth,bool was_diffuse_interaction){
+	Vector get_color(const ray& r, int ray_depth,bool was_diffuse_interaction) const {
 		//Calcul de l'intersection
 		Vector P;
 		Vector N;
@@ -532,7 +668,6 @@ public:
 
 		// Si trop de récursion : Noir
 		if (ray_depth < 0){
-			//Fin de la récursion
 			return Vector(0,0,0);
 		}
 
@@ -569,7 +704,7 @@ public:
 				
 				if (sqr(n1/n2) * (1-sqr(dot(r.u,N_reflexion))) > 1){
 					//si réflexion totale, on renvoie le rayon réfléchi. Jamais pu observer ça.
-					//On utilise la normale "signée" pour
+					//On utilise la normale "signée" pour renvoyer dans le bon sens
 					ray reflected(P + 0.0001 * N_reflexion, r.u - 2 * dot(r.u,N_reflexion) * N_reflexion);
 					return this->get_color(reflected,ray_depth - 1,false);
 				}
@@ -596,12 +731,9 @@ public:
 						return this->get_color(transmitted,ray_depth - 1,false);
 
 					}
-
-					
-					
+		
 				}
 				
-
 			}
 
 			////// Cas de l'intersection avec une matière diffuse
@@ -692,9 +824,9 @@ public:
 int main() {
 	time_t time_start = time(NULL);
 
-	int W = 1024;
-	int H = 1024;
-	int ray_count = 256;
+	int W = 512;
+	int H = 512;
+	int ray_count = 32;
 	int ray_depth = 5;
 	std::vector<unsigned char> image(W*H * 3, 0);
 
@@ -702,9 +834,9 @@ int main() {
 
 	// La lumière est la première boule
 	sphere* light_sphere = new sphere(Vector(-10,20,40),10,Vector(1.,1.,1.),false,false,1.333);
-	sphere* miroir = new sphere(Vector(0,0,0),10,Vector(0.3,0.4,0.9),true,false,1.333); // miroir
-	sphere* transparente = new sphere(Vector(-20,0,0),10,Vector(0.3,0.4,0.9),false,true,1.333); //transparente 
-	sphere* solide = new sphere(Vector(20,0,0),10,Vector(0.3,0.4,0.9),false,false,1.333); // solide
+	sphere* miroir = new sphere(Vector(-20,0,0),7,Vector(0.3,0.4,0.9),true,false,1.333); // miroir
+	sphere* transparente = new sphere(Vector(0,0,25),5,Vector(0.3,0.4,0.9),false,true,1.333); //transparente 
+	//sphere* solide = new sphere(Vector(20,0,0),10,Vector(0.3,0.4,0.9),false,false,1.333); // solide
 	sphere* background = new sphere(Vector(0,0,-1000),940,Vector(0.85,0.1,0.1),false,false,1.333);
 	sphere* topwall = new sphere(Vector(0,1000,0),940,Vector(0.1,0.9,0.2),false,false,1.333);
 	sphere* foreground = new sphere(Vector(0,0,1000),940,Vector(0.9,0.3,0.1),false,false,1.333);
@@ -714,15 +846,19 @@ int main() {
 
 	TriangleMesh* cat = new TriangleMesh();
 	cat->readOBJ("cat.obj");
-	cat->affine(Vector(0,-10,0),0.3);
-	cat->set_bounding_box();
+	cat->affine(Vector(0,-10,0),0.6);
+	cat->compute_bvh();
+	
+	time_t time_bvh = time(NULL);
+	double time_diff_min = difftime(time_bvh, time_start)/60;
+	std::cout << "Time to build scene & bvh : "<< time_diff_min << " min.";
 
 
 
 	std::vector<Geometry*> object_list;
 	object_list.push_back(light_sphere);
-	//object_list.push_back(miroir);
-	//object_list.push_back(transparente);
+	object_list.push_back(miroir);
+	object_list.push_back(transparente);
 	//object_list.push_back(solide);
 	object_list.push_back(background);
 	object_list.push_back(topwall);
@@ -778,8 +914,8 @@ int main() {
 	stbi_write_png("image.png", W, H, 3, &image[0], 0);
 
 	time_t time_end = time(NULL);
-	double time_diff_min = difftime(time_end, time_start)/60;
-	std::cout << "Time elapsed : "<< time_diff_min << " min.";
+	time_diff_min = difftime(time_end, time_start)/60;
+	std::cout << "Total time elapsed : "<< time_diff_min << " min.";
 
 	return 0;
 }
